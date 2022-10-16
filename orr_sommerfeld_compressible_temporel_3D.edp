@@ -1,0 +1,264 @@
+// Code stabilite temporel
+
+// exp(sigma t+ialpha x)	avec alpha réel et sigma complex
+// instable si sigma_r>0
+// attention : vitesse de phase = -sigma_i/alpha doit être positif si vitesse longi > 0.
+
+// Adimensionnement: vitesse par U_inf, p par p_inf, rho par rho_inf, T par T_inf
+// Les profils U(y), W(y), rho(y) et T(y) doivent valoir 1 à l'infini
+
+real M=4.5;					// M=Uinf / sqrt{gamma p_inf / rho_inf}
+real gamma=1.4;
+real Pr=0.72;				// Pr = mu C_p / K
+real beta=0.;				// Nombre d'onde transverse
+
+complex alpha=-2.25;		// nombre d'onde en x (négatif)
+complex sigma=2.07*1i;		// taux d'amplification + 1i*pulsation 
+
+real Re=9925.93;			// Reynolds par unité de longueur : Re=Uinfrho_inf/mu_inf. Dans l'exemple, la longueur de référence correspond à l'épaisseur de déplacement.
+
+real Tref=273.11;			// Température de référence pour Sutherland
+real s00=110.56/Tref;
+
+real gamM2=gamma*M^2;
+
+// Domain height			Le domaine est discrétisé sur [0,h2], donc de y=0 à y=10 ici
+real h0	 = 0.0;
+real h1  = h0+2.;
+real h11 = h0+5.;
+real h2  = h0+10.;
+
+int n=300;  // densité de points par unité de longueur proche de la paroi
+int o=150;  // densité de points par unité dans la région intermédiaire
+int m=100;  // // densité de points par unité de longueur loin de la paroi
+real delta=1./m;
+ 
+border d(t=h2,h11){x=0;y=t;label=1;};
+border d2(t=h11,h1){x=0;y=t;label=1;};
+border d3(t=h1,0){x=0;y=t;label=1;};
+border b(t=0,0+2*delta){x=t; y=0; label=2;}
+border e3(t=0,h1){x=0+2*delta;y=t;label=3;};
+border e2(t=h1,h11){x=0+2*delta;y=t;label=3;};
+border e(t=h11,h2){x=0+2*delta;y=t;label=3;};
+border f(t=0+2*delta,0){x=t; y=h2; label=4;}
+
+cout << "buildmesh" << endl;	// on fait un maillage de type rectangle. on ne va utiliser que le bord gauche avec le label 1
+mesh th = buildmesh (d((h2-h11)*m)+d2((h11-h1)*o)+d3((h1-0)*n)+b(2*delta*n)+e3((h1-0)*n)+e2((h11-h1)*o)+e((h2-h11)*m)+f(2*delta*m));
+th=emptymesh(th);	// on évide le maillage 2D pour avoir moins de degrés de liberté inutiles
+fespace p2(th,P2);	// éléments finis d'ordre 2
+fespace p22222(th,[P2,P2,P2,P2,P2]);
+
+
+// Lecture du champ de base
+
+p2 uxp,uzp,rhop,tp;
+{
+	 int nn;
+	 ifstream file("state_atcenter_mesh1000_y150_xini24e-4_longer_selfsim_goodvol_nowall_indx6.00e+02.dat");
+	 file >> nn;
+	 cout << nn << endl;
+
+	 real[int,int] a(nn,5), c(nn,5), b(nn-1,5), d(nn-1,5);
+
+	 for(int i=0; i<nn; i++)
+	 {
+		file >> a(i,0) >> a(i,1) 		   >> a(i,3) >> a(i,4); a(i,2)=0;	// fichier avec y, u(y), w(y)=0, T(y), rho(y)
+//		file >> a(i,0) >> a(i,1) >> a(i,2) >> a(i,3) >> a(i,4);				// fichier avec y, u(y), w(y),   T(y), rho(y) 
+	 }
+  
+	real[int] h(nn-1), A(nn-1), l(nn), u(nn), z(nn);		// splines cubiques pour avoir des profils réguliers
+
+    for (int i = 0; i <= nn-2; ++i)						// calcul des coefficients de spline
+		h(i) = a(i + 1,0) - a(i,0);
+  
+	for(int icomp=1; icomp<=4; icomp++)
+	{
+		for (int i = 1; i <= nn-2; ++i)
+			A(i) = 3 * (a(i + 1,icomp) - a(i,icomp)) / h(i) - 3 * (a(i,icomp) - a(i - 1,icomp)) / h(i - 1);
+
+		l(0) = 1;
+		u(0) = 0;
+		z(0) = 0;
+
+		for (int i = 1; i <= nn-1 - 1; ++i) {
+			l(i) = 2 * (a(i + 1,0) - a(i - 1,0)) - h(i - 1) * u(i - 1);
+			u(i) = h(i) / l(i);
+			z(i) = (A(i) - h(i - 1) * z(i - 1)) / l(i);
+		}
+
+		l(nn-1) = 1;
+		z(nn-1) = 0;
+		c(nn-1,icomp) = 0;
+
+		for (int j = nn-2; j >= 0; --j) {
+			c(j,icomp) = z(j) - u(j) * c(j + 1,icomp);
+			b(j,icomp) = (a(j + 1,icomp) - a(j,icomp)) / h(j) - h(j) * (c(j + 1,icomp) + 2 * c(j,icomp)) / 3;
+			d(j,icomp) = (c(j + 1,icomp) - c(j,icomp)) / (3 * h(j));
+		}
+	}
+
+	func real interpole(real yy,int icomp)	// fonction d'interpolation spline
+	{
+		int ii=1;
+		while((a(ii,0)<yy)&&(ii<nn-1))
+			ii++;
+		if(ii<nn)
+		{
+			real dx = yy - a(ii-1,0);
+			return a(ii-1,icomp) + dx*(b(ii-1,icomp) + dx*(c(ii-1,icomp) + dx*d(ii-1,icomp)));
+		}
+		else
+			return a(nn-1,icomp);
+	 }
+	   
+	uxp=interpole(y,1);		// interpolation de u
+	uzp=interpole(y,2);		// interpolation de w
+	tp=interpole(y,3);		// interpolation de t
+	rhop=interpole(y,4);	// interpolation de rho
+}
+
+// Sortie du champ de base 
+{
+ofstream file2("profil.txt");
+for(real yy=0.; yy<=h2; yy+=1./(2.*n))
+{
+ file2 << yy << " " << uxp(0,yy) << " " << uzp(0,yy) << " " << rhop(0,yy) << " " << tp(0,yy) << endl;
+};
+}
+
+p2 mu=(1.+s00)*tp^1.5/(tp+s00);		// loi de Sutherland
+p2 dmudt=(1.+s00)*(1.5/(tp+s00)*tp^0.5-1./(tp+s00)^2*tp^1.5);	// dérivée de la loi de Sutherland
+p2 d2mudt2=(1.+s00)*(2.0*tp^1.5/(tp+s00)^3-3.*tp^0.5/(tp+s00)^2+0.75/(tp+s00)/tp^0.5);	// dérivée seconde
+
+real estiminf=3.;		// position où rhop(0,y)*uxp(0,y) approx 1
+real uxpinf=uxp(0,estiminf);
+real rhoinf=rhop(0,estiminf);
+real tpinf=tp(0,estiminf);
+real muinf=mu(0,estiminf);
+cout << "uxpinf=" << uxpinf << endl;	// should be 1
+cout << "rhoinf=" << rhoinf << endl;	// should be 1
+cout << "tpinf=" << tpinf << endl;	// should be 1
+cout << "muinf=" << muinf/Re << endl;	// should be 1
+real eppdep=int1d(th,1)((1.-rhop(0,y)*uxp(0,y))*(y<=estiminf));
+cout << "epaisseur de deplacement delta=" << eppdep << endl;
+cout << "Vitesse de phase de l'onde=" << -imag(sigma)/real(alpha) << endl;
+cout << "Nombre d'onde longitudinal alpha delta=" << real(alpha)*eppdep << endl;
+cout << "Nombre d'onde transverse beta delta=" << real(beta)*eppdep << endl;
+cout << "F=10^6 omega mu_inf /(U_inf^2 rho_inf)" << 10^6*imag(sigma)/Re << endl;  
+cout << "Re_delta=Uinf delta rho_inf/mu_inf=" << uxpinf*eppdep*rhoinf/(muinf/Re) << endl;
+
+//	FREEFEM NE GERE QUE LES MAILLAGES 2D ET 3D. TRUC POUR FAIRE DU 1D.
+p22222 [rep,rep2,rep3,rep4,rep5];		// L'intégration se fait sur le bord gauche du maillage (label=1). On repère tous les noeuds sur ce bord (valeur = 1 dans rep[] et 0 dans les autres)
+rep[]=0;
+varf localise([t1,t2,t3,t4,t5],[s1,s2,s3,s4,s5])=on(1,t1=1,t2=1,t3=1,t4=1,t5=1);
+rep[]=localise(0,p22222,tgv=1);
+
+varf matB([ux,uy,uz,rho,t],[v1,v2,v3,q,s]) =		// matrice devant partial_t
+        int1d(th,1)(
+        rhop*(ux*v1+uy*v2+uz*v3+s*t)+q*rho
+        );
+matrix<complex> B=matB(p22222,p22222,solver=GMRES);	
+
+varf matA([ux,uy,uz,rho,t],[v1,v2,v3,q,s]) =		// Naviers-Stokes linéarisé
+        int1d(th,1)(
+        
+		 q*(
+			-(1i*alpha*uxp+1i*beta*uzp)*rho
+			-uy*dy(rhop)
+			-rhop*(1i*alpha*ux+dy(uy)+1i*beta*uz)
+			)
+        
+		+v1*(
+			-rhop*((1i*alpha*uxp+1i*beta*uzp)*ux+dy(uxp)*uy)
+			-1i*alpha/gamM2*(rho*tp+rhop*t)
+			+1./Re*(
+				     mu*(-(4./3.*alpha^2+beta^2)*ux+1i*alpha/3.*dy(uy)-alpha*beta/3.*uz)
+				+dmudt*dy(tp)*(2.*dy(ux)+1i*alpha*uy)+dyy(uxp)*dmudt*t
+		           )
+		    )
+		-1./Re*(dmudt*dy(tp)*v1+mu*dy(v1))*dy(ux)
+
+		+v2*(
+			-rhop*(1i*alpha*uxp+1i*beta*uzp)*uy
+			-1./gamM2*(rhop*dy(t)+tp*dy(rho)+dy(tp)*rho+dy(rhop)*t)
+			+1./Re*(
+				 mu*(-(alpha^2+beta^2)*uy+1i*alpha/3.*dy(ux)+1i*beta/3.*dy(uz))
+				+dmudt*dy(tp)*(-2.*1i*alpha/3.*ux+4./3.*dy(uy)-2.*1i*beta/3.*uz)
+				+(1i*alpha*dy(uxp)+1i*beta*dy(uzp))*dmudt*t)
+			)
+		-4./Re/3.*(dmudt*dy(tp)*v2+mu*dy(v2))*dy(uy)
+        
+		+v3*(
+			-rhop*((1i*alpha*uxp+1i*beta*uzp)*uz+dy(uzp)*uy)
+			-1i*beta/gamM2*(rho*tp+rhop*t)
+			+1./Re*(
+				 mu*(-(4./3.*beta^2+alpha^2)*uz+1i*beta/3.*dy(uy)-alpha*beta/3.*ux)
+			+dmudt*dy(tp)*(1i*beta*uy+dy(uz))+dyy(uzp)*dmudt*t+dy(uzp)*(d2mudt2*dy(tp)*t+dmudt*dy(t))
+		           )
+			)
+		-1./Re*(dmudt*dy(tp)*v3+mu*dy(v3))*dy(uz)
+
+		+s*(
+			-rhop*((1i*alpha*uxp+1i*beta*uzp)*t+dy(tp)*uy)
+			-(gamma-1)*(1i*alpha*ux+dy(uy)+1i*beta*uz)
+			+gamM2*(gamma-1)/Re*(
+				 mu*(dy(uxp)*(dy(ux)+1i*alpha*uy)+dy(uzp)*(dy(uz)+1i*beta*uy))
+				 +dmudt*t*((dy(uxp))^2+(dy(uzp))^2)/2.
+				 )
+			+gamma/Re/Pr*(
+					mu*(-alpha^2-beta^2)*t
+					+dmudt*dy(tp)*dy(t)
+					+dyy(tp)*dmudt*t
+					+dy(tp)*(d2mudt2*dy(tp)*t+dmudt*dy(t))			
+						)
+			)
+			-gamma/Re/Pr*(dmudt*dy(tp)*s+mu*dy(s))*dy(t)
+			
+		-sigma*(rhop*(ux*v1+uy*v2+uz*v3+s*t)+q*rho)
+        )
+//        + on(2,ux=0.,uy=0.,uz=0.,t=0.)	// CL isotherme
+        + on(2,ux=0.,uy=0.,uz=0.)			// CL adiabatique
+        + on(4,ux=0.,uy=0.,uz=0.,t=0.);		// freestream
+						
+matrix<complex> A=matA(p22222,p22222);	// Construction de la matrice pour Navier-Stokes linéarisé
+{	// On met 10^30 sur les éléments de la diagonale relatifs aux points qui ne sont pas sur le bord gauche
+
+	complex[int] diagofA=A.diag;				
+	for(int ii=0; ii<A.n; ii++)
+	{
+	 if(rep[][ii]==0.)
+	 {
+	  diagofA(ii)=1.e30;
+	 }
+	}
+	A.diag=diagofA;
+	set(A,solver=sparsesolver);				// On utilise LU pour inverser la matrice
+}
+
+int nev=2;								// nombre de valeurs propres recherchées proche du guesse sigma
+complex[int] ev(nev);  
+p22222<complex>[int] [eV,eV2,eV3,eV4,eV5](nev);    
+int k=EigenValue(A,B,sigma=sigma,value=ev,vector=eV,tol=1e-14,maxit=90000,ncv=30);			// espace de Krylov ncv=30. nev << ncv
+
+int which=0;			// choix de la valeur propre et du vecteur propre. which=0 : premier, which=1 : second, ...
+{
+	ofstream fifi("eigenvalue_temporel.txt");
+	fifi.precision(16);
+	fifi << beta << " " << real(alpha) << " " << imag(alpha) << " " << real(ev[which]) << " " << imag(ev[which]) << endl;			// alpha_r alpha_i parties réelle et imaginaire des valeurs propres
+}
+
+{
+	int nbValues=1000;			
+	ofstream fileEv("eigenvector_temporel.txt");
+	fileEv.precision(16);
+	for(int index=0; index<nbValues; ++index)
+	{
+		real locPos= h0+real(index)/real(nbValues)*(h2-h0);
+		fileEv << locPos																			// 2: y
+		<< " " << real(eV[which](0,locPos)) << " " << imag(eV[which](0,locPos))						// 3,4: ur,ui
+		<< " " << real(eV2[which](0,locPos)) << " " << imag(eV2[which](0,locPos))					// 5,6: vr,vi
+		<< " " << real(eV3[which](0,locPos)) << " " << imag(eV3[which](0,locPos))					// 7,8: wr,wi
+		<< " " << real(eV4[which](0,locPos)) << " " << imag(eV4[which](0,locPos))					// 9,10: rhor, rhoi
+		<< " " << real(eV5[which](0,locPos)) << " " << imag(eV5[which](0,locPos)) << endl;			// 11,12: tr,ti
+	}
+}
