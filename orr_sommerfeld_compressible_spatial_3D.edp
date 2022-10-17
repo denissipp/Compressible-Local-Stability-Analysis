@@ -13,7 +13,7 @@ real beta=0.;				// Nombre d'onde transverse
 real omega=2.07;			// fréquence	
 complex alpha0=-2.25; 		// nombre d'onde en x guess (négatif)
 
-real Re=9925.93;			// Reynolds par unité de longueur : Re=U_inf rho_inf / mu_inf. Dans l'exemple, la longueur de référence correspond à l'épaisseur de déplacement.
+real Re=9925.93;			// Reynolds unitaire (Re:=U_inf rho_inf / mu_inf). Dans l'exemple, la longueur de référence étant l'épaisseur de déplacement (L=delta=1), Re=Re_\delta=U_inf delta rho_inf / mu_inf 
 
 real Tref=273.11;			// Température de référence pour Sutherland
 real s00=110.56/Tref;
